@@ -1,0 +1,253 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=Noto+Serif+SC:wght@400;600&display=block" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<style>
+html,body{margin:0;background:transparent}
+body{width:1920px;height:1080px;overflow:hidden;position:relative}
+svg{position:absolute;inset:0}
+.en{font-family:"IM Fell English",serif;font-style:italic;fill:#fff}
+.zh{font-family:"Noto Serif SC",serif;fill:#fff;fill-opacity:.95}
+.num{font-family:"Noto Serif SC",serif;font-weight:600;fill:rgb(96,74,54);font-size:24px;text-anchor:middle;dominant-baseline:central}
+.shadow{filter:drop-shadow(0 1px 3px rgba(40,25,10,.6)) drop-shadow(0 0 10px rgba(30,20,10,.35))}
+.pill{font-family:"Noto Serif SC",serif;font-weight:600;fill:#fff;text-anchor:middle;dominant-baseline:central}
+svg.halo .stop text:not(.num){paint-order:stroke;stroke:rgba(66,49,36,.9);stroke-width:6px;stroke-linejoin:round}
+</style></head><body>
+<svg id="m" width="1920" height="1080"></svg>
+<script>
+// 通用路线地图：?cfg=czech 读取 cfg-czech.js（window.CFG），按 CFG.seq 顺序画出各元素，
+// 每个元素带 class="seq" data-k（顺序）data-kind（leg/train/stop/fade），给透明动画模板按顺序播放。
+// 城市底图通用图层（公园 → 铁路 → 街道分级 → 河面）
+window.CITY_BASE=[
+  {key:'park',fill:'rgb(150,132,92)',op:.38},
+  {key:'rail',stroke:'#fff',w:1.4,op:.28},
+  {key:'st_minor',stroke:'#fff',w:1,op:.2},
+  {key:'st_mid',stroke:'#fff',w:1.6,op:.3},
+  {key:'st_major',stroke:'#fff',w:3,op:.42},
+  {key:'water',fill:'rgb(52,40,30)',op:.72,stroke:'#fff',w:2,sop:.75},
+];
+window.REGION_BASE=[
+  {key:'water',fill:'rgb(52,40,30)',op:.75},
+  {key:'river',stroke:'rgb(52,40,30)',w:5,op:.8},
+  {key:'st_mid',stroke:'#fff',w:1.4,op:.28},
+  {key:'st_major',stroke:'#fff',w:3,op:.45},
+];
+const q=new URLSearchParams(location.search);
+const W=1920,H=+(q.get('h')||1080);
+document.body.style.height=H+'px'; document.getElementById('m').setAttribute('height',H);
+const s=document.createElement('script'); s.src='cfg-'+q.get('cfg')+'.js';
+s.onload=()=>{
+  const list=[window.CFG.geo&&'geo-'+window.CFG.geo+'.js',window.CFG.routes&&'routes-'+window.CFG.routes+'.js'].filter(Boolean);
+  const next=()=>{ if(!list.length) return build(); const g=document.createElement('script'); g.src=list.shift(); g.onload=next; document.head.appendChild(g); };
+  next();
+};
+document.head.appendChild(s);
+
+// 与动画模板一致的时长规则，算出总时长写到 svg 上
+const DUR={leg:1.2,train:1.5,stop:0.55,fade:0.5,intro:2.8,hold:2.5};
+
+function build(){
+  const C=window.CFG;
+  Promise.all([d3.json('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-'+(C.atlas||'10m')+'.json'),document.fonts.ready]).then(([topo])=>{
+    const all=topojson.feature(topo,topo.objects.countries).features;
+    const GEO=window.GEO||{};
+    const shapeKeys=C.shapes||[];
+    const feats=(C.countries||[]).map(n=>all.find(f=>f.properties.name===n)).concat(shapeKeys.map(k=>GEO[k]));
+    const proj=d3.geoMercator().fitExtent(C.extent,C.fit?{type:'MultiPoint',coordinates:C.fit}:C.shape?GEO.shape:{type:'FeatureCollection',features:feats});
+    const path=d3.geoPath(proj);
+    const svg=d3.select('#m');
+    const FILL_OP=C.fillOpacity??.42;
+    feats.forEach((f,i)=>svg.append('path').attr('class','country-fill').attr('d',path(f))
+      .attr('fill','rgb(108,84,62)').attr('fill-opacity',FILL_OP));
+    feats.forEach((f,i)=>svg.append('path').attr('class','country-line').attr('d',path(f))
+      .attr('fill','none').attr('stroke','#fff').attr('stroke-width',C.lineWidth||7).attr('stroke-linejoin','round'));
+
+    // 河流：width（公里）> 0 画成有宽度的河面（褐色填充+两条白岸线），否则一条细白线
+    const pxPerKm=(pr,p0)=>{const a=pr(p0),b=pr([p0[0],p0[1]+0.009]);return Math.hypot(a[0]-b[0],a[1]-b[1]);};
+    const drawRiver=(parent,pr,r,idx,animated)=>{
+      const pth=d3.geoPath(pr), d=pth(GEO[r.key]), lw=r.lw||4;
+      if(r.width){
+        const w=r.width*pxPerKm(pr,r.ref||C.fit[0]), mid='rm'+idx;
+        const m=svg.append('mask').attr('id',mid).attr('maskUnits','userSpaceOnUse').attr('x',-400).attr('y',-400).attr('width',2800).attr('height',1900);
+        m.append('rect').attr('x',-400).attr('y',-400).attr('width',2800).attr('height',1900).attr('fill','#fff');
+        m.append('path').attr('d',d).attr('fill','none').attr('stroke','#000').attr('stroke-width',w).attr('stroke-linejoin','round').attr('stroke-linecap','butt');
+        parent.append('path').attr('class',animated?'country-fill':null).attr('d',d).attr('fill','none').attr('stroke','rgb(108,84,62)').attr('stroke-opacity',r.op??.62).attr('stroke-width',w).attr('stroke-linejoin','round');
+        const gl=parent.append('g').attr('mask','url(#'+mid+')');
+        gl.append('path').attr('class',animated?'country-line':null).attr('d',d).attr('fill','none').attr('stroke','#fff').attr('stroke-width',w+lw*2).attr('stroke-linejoin','round');
+      } else {
+        parent.append('path').attr('class',animated?'country-line':null).attr('d',d).attr('fill','none').attr('stroke','#fff').attr('stroke-width',r.lw||2.5).attr('stroke-linejoin','round').attr('opacity',r.opacity??.85);
+      }
+      if(r.label){ const a=pr(r.label.at); parent.append('text').attr('class','en').attr('x',a[0]).attr('y',a[1]).attr('font-size',r.label.size||24).attr('text-anchor','middle')
+        .attr('transform','rotate('+(r.label.rot||0)+' '+a[0]+' '+a[1]+')').attr('fill-opacity',.9).attr('letter-spacing',2).text(r.label.text); }
+    };
+    // 轮廓底图：按行政边界（GEO.shape）的形状铺褐底 + 街道/河面/公园 + 粗白描边，不用矩形框
+    if(C.shape){
+      svg.classed('halo',true);
+      const sd=path(GEO.shape);
+      svg.append('clipPath').attr('id','shape-clip').append('path').attr('d',sd);
+      const bg=svg.append('g').attr('class','country-fill').attr('clip-path','url(#shape-clip)');
+      bg.append('path').attr('d',sd).attr('fill','rgb(108,84,62)').attr('fill-opacity',C.fillOpacity??.55);
+      (C.base||[]).forEach(l=>{ const d=path(GEO[l.key]); if(!d) return;
+        const pp=bg.append('path').attr('d',d).attr('stroke-linejoin','round').attr('stroke-linecap','round');
+        pp.attr('fill',l.fill||'none').attr('fill-opacity',l.op??1);
+        if(l.stroke) pp.attr('stroke',l.stroke).attr('stroke-width',l.w||1).attr('stroke-opacity',l.fill?(l.sop??.5):(l.op??.3)); });
+      (C.labels||[]).forEach(l=>{ const a=proj(l.at); svg.append('text').attr('class',(l.zh?'zh':'en')+' country-fill').attr('x',a[0]).attr('y',a[1]).attr('font-size',l.size||24)
+        .attr('text-anchor','middle').attr('letter-spacing',l.ls||2).attr('fill-opacity',l.op??.6).attr('transform','rotate('+(l.rot||0)+' '+a[0]+' '+a[1]+')').text(l.text); });
+      svg.append('path').attr('class','country-line').attr('d',sd).attr('fill','none').attr('stroke','#fff').attr('stroke-width',C.lineWidth||6).attr('stroke-linejoin','round');
+    }
+    // 底图面板：圆角矩形褐底 + 街道/河面/公园图层 + 粗白描边
+    if(C.panel){
+      const [x,y,w,h]=C.panel, rx=C.panelR??26;
+      svg.classed('halo',true);
+      svg.append('clipPath').attr('id','panel-clip').append('rect').attr('x',x).attr('y',y).attr('width',w).attr('height',h).attr('rx',rx);
+      const cp=d3.geoMercator().scale(proj.scale()).translate(proj.translate()).clipExtent([[x-20,y-20],[x+w+20,y+h+20]]);
+      const cpath=d3.geoPath(cp);
+      const bg=svg.append('g').attr('class','country-fill').attr('clip-path','url(#panel-clip)');
+      bg.append('rect').attr('x',x).attr('y',y).attr('width',w).attr('height',h).attr('fill','rgb(108,84,62)').attr('fill-opacity',C.fillOpacity??.62);
+      (C.base||[]).forEach(l=>{
+        const d=cpath(GEO[l.key]); if(!d) return;
+        const pp=bg.append('path').attr('d',d).attr('stroke-linejoin','round').attr('stroke-linecap','round');
+        pp.attr('fill',l.fill||'none').attr('fill-opacity',l.op??1);
+        if(l.stroke) pp.attr('stroke',l.stroke).attr('stroke-width',l.w||1).attr('stroke-opacity',l.fill?(l.sop??.5):(l.op??.3));
+      });
+      (C.labels||[]).forEach(l=>{ const a=proj(l.at); bg.append('text').attr('class',l.zh?'zh':'en').attr('x',a[0]).attr('y',a[1]).attr('font-size',l.size||24)
+        .attr('text-anchor','middle').attr('letter-spacing',l.ls||2).attr('fill-opacity',l.op??.6).attr('transform','rotate('+(l.rot||0)+' '+a[0]+' '+a[1]+')').text(l.text); });
+      svg.append('path').attr('class','country-line').attr('fill','none').attr('stroke','#fff').attr('stroke-width',C.lineWidth||6)
+        .attr('d',`M ${x+rx} ${y} H ${x+w-rx} A ${rx} ${rx} 0 0 1 ${x+w} ${y+rx} V ${y+h-rx} A ${rx} ${rx} 0 0 1 ${x+w-rx} ${y+h} H ${x+rx} A ${rx} ${rx} 0 0 1 ${x} ${y+h-rx} V ${y+rx} A ${rx} ${rx} 0 0 1 ${x+rx} ${y} Z`);
+    }
+    (C.rivers||[]).forEach((r,i)=>drawRiver(svg,proj,r,i,true));
+
+    const g=svg.append('g').attr('class','shadow');
+
+    // 放大框（例：三联城）
+    let iproj=null, ig=null;
+    if(C.inset){
+      const I=C.inset, [x,y,w,h]=I.rect;
+      iproj=d3.geoMercator().fitExtent([[x+30,y+30],[x+w-30,y+h-30]],{type:'MultiPoint',coordinates:I.fit});
+      const ipath=d3.geoPath(iproj);
+      ig=g.append('g').attr('id','inset').attr('class','seq-holder');
+      const defs=svg.append('defs');
+      const circ=I.circle, R=w/2, ccx=x+R, ccy=y+R;
+      if(circ) defs.append('clipPath').attr('id','inset-clip').append('circle').attr('cx',ccx).attr('cy',ccy).attr('r',R);
+      else defs.append('clipPath').attr('id','inset-clip').append('rect').attr('x',x).attr('y',y).attr('width',w).attr('height',h).attr('rx',18);
+      // 主图上的小框 + 连线
+      const a=proj(I.box[0]), b=proj(I.box[1]);
+      const bx=Math.min(a[0],b[0]), by=Math.min(a[1],b[1]), bw=Math.abs(b[0]-a[0]), bh=Math.abs(b[1]-a[1]);
+      if(circ){ const mx=bx+bw/2, my=by+bh/2, mr=Math.max(bw,bh)/2, dx=ccx-mx, dy=ccy-my, dl=Math.hypot(dx,dy);
+        ig.append('circle').attr('cx',mx).attr('cy',my).attr('r',mr).attr('fill','none').attr('stroke','#fff').attr('stroke-width',2.5).attr('stroke-dasharray','6 5');
+        ig.append('line').attr('x1',mx+dx/dl*mr).attr('y1',my+dy/dl*mr).attr('x2',ccx-dx/dl*R).attr('y2',ccy-dy/dl*R).attr('stroke','#fff').attr('stroke-width',2).attr('stroke-dasharray','2 6').attr('stroke-linecap','round');
+      } else {
+      ig.append('rect').attr('x',bx).attr('y',by).attr('width',bw).attr('height',bh).attr('fill','none').attr('stroke','#fff').attr('stroke-width',2.5).attr('stroke-dasharray','6 5');
+      const onLeft=x+w/2<bx; ig.append('line').attr('x1',onLeft?bx:bx+bw).attr('y1',by+bh/2).attr('x2',onLeft?x+w:x).attr('y2',y+h/2).attr('stroke','#fff').attr('stroke-width',2).attr('stroke-dasharray','2 6').attr('stroke-linecap','round'); }
+      const cg=ig.append('g').attr('clip-path','url(#inset-clip)');
+      if(circ) cg.append('circle').attr('cx',ccx).attr('cy',ccy).attr('r',R).attr('fill',I.bg||'rgba(38,30,24,0.78)'); else cg.append('rect').attr('x',x).attr('y',y).attr('width',w).attr('height',h).attr('fill',I.bg||'rgba(38,30,24,0.78)');
+      (I.rivers||[]).forEach((r,i)=>drawRiver(cg,iproj,r,'i'+i,false));
+      // 放大框里也画街道底图（城市老城细节）
+      if(I.base){ const ip=d3.geoMercator().scale(iproj.scale()).translate(iproj.translate()).clipExtent([[x-20,y-20],[x+w+20,y+h+20]]), ipp=d3.geoPath(ip);
+        I.base.forEach(l=>{ const dd=ipp(GEO[l.key]); if(!dd) return; const pp=cg.append('path').attr('d',dd).attr('stroke-linejoin','round').attr('stroke-linecap','round');
+          pp.attr('fill',l.fill||'none').attr('fill-opacity',l.op??1); if(l.stroke) pp.attr('stroke',l.stroke).attr('stroke-width',l.w||1).attr('stroke-opacity',l.fill?(l.sop??.5):(l.op??.3)); }); }
+      (I.countries||[]).forEach(n=>{const f=all.find(f=>f.properties.name===n);
+        cg.append('path').attr('d',ipath(f)).attr('fill','rgb(150,122,94)').attr('fill-opacity',.9).attr('stroke','#fff').attr('stroke-width',4).attr('stroke-linejoin','round');});
+      if(circ) ig.append('circle').attr('cx',ccx).attr('cy',ccy).attr('r',R).attr('fill','none').attr('stroke','#fff').attr('stroke-width',4); else ig.append('rect').attr('x',x).attr('y',y).attr('width',w).attr('height',h).attr('rx',18).attr('fill','none').attr('stroke','#fff').attr('stroke-width',3);
+      if(I.label){const lx=I.label.x??x+24, ly=I.label.y??y+46;
+        ig.append('text').attr('class','en').attr('x',lx).attr('y',ly).attr('font-size',30).text(I.label.en);
+        ig.append('text').attr('class','zh').attr('x',lx).attr('y',ly+30).attr('font-size',19).text(I.label.zh);}
+    }
+    const PT=(key)=>{const st=C.stops[key];return (st.inset?iproj:proj)(st.p);};
+    // 位置写法：站点名 / [经度,纬度] / {px:[x,y]} 画面像素
+    const P=(v)=>typeof v==='string'?PT(v):(v.px?v.px:proj(v));
+
+    let k=0, total=DUR.intro;
+    C.seq.forEach(item=>{
+      if(item.stop){
+        const st=C.stops[item.stop], [x,y]=PT(item.stop);
+        const sg=(st.inset?ig:g).append('g').attr('class','seq stop').attr('data-k',k++).attr('data-kind','stop').attr('transform',`translate(${x},${y})`);
+        const r=st.small?15:20;
+        sg.append('circle').attr('class','dot').attr('r',r).attr('data-r',r).attr('fill','#fff');
+        if(st.num!==undefined) sg.append('text').attr('class','num').attr('y',1).attr('font-size',st.small?19:24).text(st.num);
+        const big=st.big||42;
+        if(st.day) sg.append('text').attr('class','en').attr('x',st.lx).attr('y',st.ly-big+2).attr('font-size',22).attr('text-anchor',st.a).attr('letter-spacing',2).attr('fill-opacity',.8).text(st.day);
+        sg.append('text').attr('class','en').attr('x',st.lx).attr('y',st.ly).attr('font-size',big).attr('text-anchor',st.a).text(st.en);
+        let zy=st.ly+Math.round(big*.76);
+        [st.zh,st.zh2].filter(Boolean).forEach(z=>{sg.append('text').attr('class','zh').attr('x',st.lx).attr('y',zy).attr('font-size',st.zhSize||21).attr('text-anchor',st.a).text(z); zy+=30;});
+        total+=DUR.stop;
+      } else if(item.leg||item.train){
+        const isTrain=!!item.train, ends=item.leg||item.train;
+        const Pp=item.inset?(v=>typeof v==='string'?PT(v):(v.px?v.px:iproj(v))):P;
+        const a=Pp(ends[0]), b=Pp(ends[1]);
+        let d;
+        if(item.route){
+          let pts=window.ROUTES[item.route].g.map(c=>(item.inset?iproj:proj)(c));
+          if(item.offset){ const o=item.offset; pts=pts.map((p,i)=>{ const u=pts[Math.max(i-3,0)], v=pts[Math.min(i+3,pts.length-1)], l=Math.hypot(v[0]-u[0],v[1]-u[1])||1; return [p[0]-(v[1]-u[1])/l*o,p[1]+(v[0]-u[0])/l*o]; }); }
+          if(item.cutPanel){ const [x,y,w,h]=C.panel, n=pts.findIndex(p=>p[0]<x||p[0]>x+w||p[1]<y||p[1]>y+h); if(n>0) pts=pts.slice(0,n); }
+          d=d3.line()(pts);
+        }
+        else if(item.via&&item.straight){ d=d3.line()([a,...item.via.map(Pp),b]); }
+        else if(item.via){ d=d3.line().curve(d3.curveCatmullRom.alpha(.5))([a,...item.via.map(Pp),b]); }
+        else if(item.c1){ d=`M ${a} C ${Pp(item.c1)} ${Pp(item.c2)} ${b}`; }
+        else { const dx=b[0]-a[0],dy=b[1]-a[1],bend=item.bend||0;
+          const c=[(a[0]+b[0])/2-dy*bend,(a[1]+b[1])/2+dx*bend]; d=`M ${a} Q ${c} ${b}`; item._c=c; }
+        const lg=(item.inset?ig:g).append('g').attr('class','seq '+(isTrain?'train':'leg')).attr('data-k',k++).attr('data-kind',isTrain?'train':'leg');
+        if(item.planeIcon) lg.attr('data-plane',item.planeIcon);
+        if(item.dur) lg.attr('data-dur',item.dur);
+        const mode=item.mode||(isTrain?'train':'drive');
+        const style={drive:['0.1 14',7],bus:['18 7 2 7',4],train:['14 10',3],boat:['8 7',3],drive_s:['0.1 10',5],train_s:['10 8',2.5],walk:['0.1 11',6],car:['14 9',4.5],metro:['',5.5],cruise:['9 7',4],plane:['22 12',3.5],rail:['',3.5]}[mode];
+        const rp=lg.append('path').attr('class','route').attr('d',d).attr('fill','none').attr('stroke','#fff').attr('stroke-width',style[1]).attr('stroke-dasharray',style[0]).attr('stroke-linecap','round');
+        // 没写 at 时自动摆放：路线上 pos 处（默认中点）沿法线 side 侧偏 pd 像素，引线指回路线
+        if(item.pill&&(!item.at||item.lead==='auto')){ const keepAt=item.at; if(item.lead==='auto') item.lead=null;
+          const nd=rp.node(), len=nd.getTotalLength(), t=len*(item.pos??.5), m=nd.getPointAtLength(t), u=nd.getPointAtLength(Math.max(t-3,0)), v=nd.getPointAtLength(Math.min(t+3,len));
+          const l=Math.hypot(v.x-u.x,v.y-u.y)||1, sd=item.side??1, dist=item.pd??85;
+          item.at=keepAt||{px:[m.x-(v.y-u.y)/l*dist*sd,m.y+(v.x-u.x)/l*dist*sd]}; item.lead=item.lead||{px:[m.x,m.y]};
+          if(item.dx) item.at.px[0]+=item.dx; if(item.dy) item.at.px[1]+=item.dy;
+        }
+        if(item.pill){
+          const [m0,tm,ex]=item.pill, c=Pp(item.at), fs=item.pSize||C.pSize||25;
+          const wd=(str,f)=>[...str].reduce((n,ch)=>n+(ch.charCodeAt(0)>255?f:f*.58),0);
+          const parts=[[m0+' ',fs],[tm,fs+7],[ex?' · '+ex:'',fs-3]], tw=parts.reduce((n,p)=>n+wd(p[0],p[1]),0), pw=tw+38, ph=fs+27;
+          const pg=lg.append('g').attr('class','pillg').attr('transform',`translate(${c[0]},${c[1]})`);
+          if(item.lead){ const l=Pp(item.lead); pg.append('line').attr('x2',l[0]-c[0]).attr('y2',l[1]-c[1]).attr('stroke','#fff').attr('stroke-width',1.8); pg.append('circle').attr('cx',l[0]-c[0]).attr('cy',l[1]-c[1]).attr('r',4).attr('fill','#fff'); }
+          pg.append('rect').attr('x',-pw/2).attr('y',-ph/2).attr('width',pw).attr('height',ph).attr('rx',ph/2).attr('fill','rgb(66,49,36)').attr('fill-opacity',.92).attr('stroke','#fff').attr('stroke-width',2);
+          const tx=pg.append('text').attr('class','pill').attr('y',1);
+          parts.forEach(p=>{ if(p[0]) tx.append('tspan').attr('font-size',p[1]).text(p[0]); });
+        }
+        if(item.t||item.zh){
+          let m;
+          if(item.at) m=Pp(item.at);
+          else { const c=item._c||[(a[0]+b[0])/2,(a[1]+b[1])/2]; m=[(a[0]+2*c[0]+b[0])/4+(item.ox||0),(a[1]+2*c[1]+b[1])/4+(item.oy||0)]; }
+          const anc=item.anchor||'middle';
+          if(item.t) lg.append('text').attr('class','en').attr('x',m[0]).attr('y',m[1]).attr('font-size',item.tSize||23).attr('text-anchor',anc).attr('fill-opacity',.92).text(item.t);
+          if(item.zh) lg.append('text').attr('class','zh').attr('x',m[0]).attr('y',m[1]+(item.t?28:0)).attr('font-size',19).attr('text-anchor',anc).text(item.zh);
+        }
+        total+=item.dur||(isTrain?DUR.train:DUR.leg);
+      } else if(item.fade){
+        let el;
+        if(item.fade==='inset'){ el=ig; }
+        else { const [x,y]=P(item.at); el=g.append('g');
+          el.append('text').attr('class','en').attr('x',x).attr('y',y).attr('font-size',item.size||30).attr('text-anchor',item.anchor||'start').attr('letter-spacing',item.ls||0).text(item.en);
+          if(item.zh) el.append('text').attr('class','zh').attr('x',x).attr('y',y+(item.zhDy||30)).attr('font-size',item.zhSize||19).attr('text-anchor',item.anchor||'start').attr('letter-spacing',item.zhLs||0).text(item.zh); }
+        el.classed('seq',true).attr('data-k',k++).attr('data-kind','fade');
+        total+=DUR.fade;
+      }
+    });
+
+    g.selectAll('.stop').raise();
+    (C.towns||[]).forEach(n=>{ const t=GEO.towns.find(t=>t.n===n); if(!t) return; const a=proj(t.p);
+      svg.insert('text','.shadow').attr('class','en country-fill').attr('x',a[0]).attr('y',a[1]).attr('font-size',22).attr('text-anchor','middle').attr('fill-opacity',.72).text(n); });
+    // 标题
+    const T=C.title, tg=svg.append('g').attr('id','title').style('filter','drop-shadow(0 2px 6px rgba(50,30,10,.55)) drop-shadow(0 0 18px rgba(80,60,40,.35))');
+    tg.append('text').attr('class','en').attr('x',T.x).attr('y',T.y-60).attr('font-size',34).attr('text-anchor','middle').text(T.over);
+    tg.append('text').attr('class','en').attr('x',T.x).attr('y',T.y+20).attr('font-size',T.size||86).attr('font-style','normal').attr('text-anchor','middle').text(T.main);
+    tg.append('text').attr('class','zh').attr('x',T.x).attr('y',T.y+64).attr('font-size',24).attr('letter-spacing',10).attr('text-anchor','middle').text(T.zh);
+
+    // 图例（线型）
+    if(C.legend){ const L=C.legend; L.items.forEach(([mode,txt],i)=>{ const yy=L.y+i*42;
+      const sty={walk:['0.1 11',6],car:['14 9',4.5],metro:['',5.5],cruise:['9 7',4],rail:['',3.5],bus:['18 7 2 7',4],plane:['22 12',3.5]}[mode];
+      tg.append('line').attr('x1',L.x).attr('x2',L.x+70).attr('y1',yy).attr('y2',yy).attr('stroke','#fff').attr('stroke-width',sty[1]).attr('stroke-dasharray',sty[0]).attr('stroke-linecap','round');
+      tg.append('text').attr('class','zh').attr('x',L.x+88).attr('y',yy+7).attr('font-size',22).text(txt); }); }
+
+    svg.attr('data-total',(total+DUR.hold).toFixed(2));
+    document.title='ready';
+  });
+}
+</script></body></html>

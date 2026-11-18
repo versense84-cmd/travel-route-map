@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1920, height=1080">
+<title>__TITLE__</title>
+<link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=Noto+Serif+SC:wght@400;600&display=block" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<style>
+html,body{margin:0;background:transparent}
+#root{position:relative;width:1920px;height:1080px;overflow:hidden}
+#map-clip{position:absolute;inset:0}
+svg{position:absolute;inset:0}
+.en{font-family:"IM Fell English",serif;font-style:italic;fill:#fff}
+.zh{font-family:"Noto Serif SC",serif;fill:#fff;fill-opacity:.95}
+.num{font-family:"Noto Serif SC",serif;font-weight:600;fill:rgb(96,74,54);font-size:24px;text-anchor:middle;dominant-baseline:central}
+.shadow{filter:drop-shadow(0 1px 3px rgba(40,25,10,.6)) drop-shadow(0 0 10px rgba(30,20,10,.35))}
+.pill{font-family:"Noto Serif SC",serif;font-weight:600;fill:#fff;text-anchor:middle;dominant-baseline:central}
+svg.halo .stop text:not(.num){paint-order:stroke;stroke:rgba(66,49,36,.9);stroke-width:6px;stroke-linejoin:round}
+</style>
+</head>
+<body>
+<div id="root" data-composition-id="main" data-start="0" data-width="1920" data-height="1080" data-duration="__DUR__">
+<div id="map-clip" class="clip" data-start="0" data-duration="__DUR__">
+__SVG__
+</div>
+</div>
+<script>
+// 时间轴：国界描边 → 标题 → 按 data-k 顺序：路线/火车逐段画出、站点弹出+光环、文字淡入
+// 时长规则与 engine.html 的 DUR 一致
+const NS='http://www.w3.org/2000/svg';
+const svg=document.querySelector('#m');
+const defs=document.createElementNS(NS,'defs'); svg.prepend(defs);
+const tl=gsap.timeline({paused:true});
+const DUR={leg:1.2,train:1.5,stop:0.55,fade:0.5,intro:2.8};
+
+function drawMask(path,id,width){
+  const len=path.getTotalLength();
+  const mask=document.createElementNS(NS,'mask');
+  mask.setAttribute('id',id); mask.setAttribute('maskUnits','userSpaceOnUse');
+  mask.setAttribute('x',-200); mask.setAttribute('y',-200); mask.setAttribute('width',2400); mask.setAttribute('height',1600);
+  const mp=document.createElementNS(NS,'path');
+  mp.setAttribute('d',path.getAttribute('d')); mp.setAttribute('fill','none');
+  mp.setAttribute('stroke','#fff'); mp.setAttribute('stroke-width',width); mp.setAttribute('stroke-linecap','round');
+  mp.setAttribute('stroke-dasharray',len); mp.setAttribute('stroke-dashoffset',len);
+  mask.appendChild(mp); defs.appendChild(mask);
+  path.setAttribute('mask','url(#'+id+')');
+  return mp;
+}
+
+// 1. 国界描边（多国依次）+ 填色 + 标题
+const lines=[...document.querySelectorAll('.country-line')];
+const stag=lines.length>1?0.3:0;
+lines.forEach((line,i)=>{
+  const L=line.getTotalLength();
+  line.setAttribute('stroke-dasharray',L); line.setAttribute('stroke-dashoffset',L);
+  tl.to(line,{attr:{'stroke-dashoffset':0},duration:2.2-stag*(lines.length-1)*0.5,ease:'power2.inOut'},i*stag);
+});
+tl.fromTo('.country-fill',{opacity:0},{opacity:1,duration:1,ease:'power1.out'},1.4);
+tl.fromTo('#title',{opacity:0,y:16},{opacity:1,y:0,duration:0.9,ease:'power2.out'},2.0);
+
+// 2. 按顺序播放
+const items=[...document.querySelectorAll('.seq')].sort((a,b)=>a.dataset.k-b.dataset.k);
+let t=DUR.intro;
+items.forEach((el,n)=>{
+  const kind=el.dataset.kind;
+  if(kind==='leg'||kind==='train'){
+    const p=el.querySelector('.route');
+    const mp=drawMask(p,'m'+n,kind==='train'?14:22);
+    const d=+el.dataset.dur||(kind==='train'?DUR.train:DUR.leg);
+    tl.to(mp,{attr:{'stroke-dashoffset':0},duration:d,ease:'power1.inOut'},t);
+    // 飞机：沿航线跟着虚线一起飞，机头朝切线方向，到终点后淡出
+    if(el.dataset.plane){
+      const len=p.getTotalLength(), sz=+el.dataset.plane;
+      const pg=document.createElementNS(NS,'g'); pg.setAttribute('opacity',0); el.appendChild(pg);
+      const ic=document.createElementNS(NS,'path');
+      ic.setAttribute('d','M 26 0 C 26 -3 22 -4 18 -4 L 4 -4 L -10 -22 L -16 -22 L -8 -4 L -20 -4 L -26 -12 L -30 -12 L -26 0 L -30 12 L -26 12 L -20 4 L -8 4 L -16 22 L -10 22 L 4 4 L 18 4 C 22 4 26 3 26 0 Z');
+      ic.setAttribute('fill','#fff'); ic.setAttribute('transform','scale('+(sz/52)+')'); pg.appendChild(ic);
+      const st={p:0};
+      const place=()=>{ const q=Math.min(Math.max(st.p,0),1), a=p.getPointAtLength(len*q), b=p.getPointAtLength(Math.min(len*q+2,len)), c=p.getPointAtLength(Math.max(len*q-2,0));
+        const ang=Math.atan2(b.y-c.y,b.x-c.x)*180/Math.PI; pg.setAttribute('transform','translate('+a.x+','+a.y+') rotate('+ang+')'); };
+      place();
+      tl.to(pg,{attr:{opacity:1},duration:0.25},t);
+      tl.to(st,{p:1,duration:d,ease:'power1.inOut',onUpdate:place},t);
+      tl.to(pg,{attr:{opacity:0},duration:0.4},t+d+0.2);
+    }
+    const txt=el.querySelectorAll(':scope > text, :scope > .pillg');
+    if(txt.length) tl.fromTo(txt,{opacity:0},{opacity:1,duration:0.5,stagger:0.08},t+0.4);
+    t+=d;
+  } else if(kind==='stop'){
+    const dot=el.querySelector('.dot'), r=+dot.dataset.r;
+    const ring=document.createElementNS(NS,'circle');
+    ring.setAttribute('r',r); ring.setAttribute('fill','none'); ring.setAttribute('stroke','#fff'); ring.setAttribute('stroke-width',3); ring.setAttribute('opacity',0);
+    el.prepend(ring);
+    tl.fromTo(dot,{attr:{r:0}},{attr:{r:r},duration:0.45,ease:'back.out(2.5)'},t);
+    const num=el.querySelector('.num');
+    if(num) tl.fromTo(num,{opacity:0},{opacity:1,duration:0.25},t+0.15);
+    tl.fromTo(ring,{attr:{r:r},opacity:0.9},{attr:{r:r*3.5},opacity:0,duration:0.9,ease:'power2.out',immediateRender:false},t+0.1);
+    const txt=[...el.querySelectorAll('text')].filter(x=>!x.classList.contains('num'));
+    if(txt.length) tl.fromTo(txt,{opacity:0},{opacity:1,duration:0.5,stagger:0.08,ease:'power1.out'},t+0.2);
+    t+=DUR.stop;
+  } else if(kind==='fade'){
+    tl.fromTo(el,{opacity:0},{opacity:1,duration:0.6,ease:'power1.out'},t);
+    t+=DUR.fade;
+  }
+});
+tl.to({}, {duration:0.01}, __DUR__);
+window.__timelines["main"]=tl;
+</script>
+</body>
+</html>
